@@ -1,0 +1,27 @@
+This was last tested on Matlab (R2021a)
+
+To re-create the figures in the manuscript, follow these steps:
+
+(1) Obtain required packages needed to run this code:
+
+  cosmomvpa: https://github.com/CoSMoMVPA/ (our exact version used was: 4f0105141a528fabcffe79e322ef3cfb687dd7f9)
+  matplotlib colourmaps: https://au.mathworks.com/matlabcentral/fileexchange/62729-matplotlib-perceptually-uniform-colormaps
+
+(2) create the following directory structure:
+
+  ./
+  ./code                    (code directory, optain from osf)
+  ./data                    (bids data, including derivatives/RDM directory, obtain from openneuro)
+  ./figures                 (empty figure output directory)
+  ./object_concepts.xlsx    (optain from osf)
+  ./test_images.xlsx        (optain from osf)
+
+(3) In matlab, navigate to the "code" directory and run
+
+  plot_results_test_images.m (creates Figure 2 in the paper)
+  plot_results_full_RDM.m (creates Figure 3 in the paper)
+
+DISCLAIMER:
+
+This code was written for unix systems. It will not run on windows without adjusting paths.
+The code to create the RDMS was specifically written for a high performance computing cluster, and will need adaptation to make it work on a different machine.

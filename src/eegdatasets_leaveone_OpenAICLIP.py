@@ -1,0 +1,527 @@
+import torch
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+import open_clip
+from torch.nn import functional as F
+import torch.nn as nn
+from PIL import Image
+import requests,os,json
+from torchvision import transforms
+
+cuda_device_count = torch.cuda.device_count()
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+class Clipper(torch.nn.Module):
+    def __init__(self, clip_variant, path=None, clamp_embs=False, norm_embs=False,
+                 hidden_state=False, device=torch.device('cpu')):
+        super().__init__()
+        assert clip_variant in ("RN50", "ViT-L/14", "ViT-B/32", "RN50x64"), \
+            "clip_variant must be one of RN50, ViT-L/14, ViT-B/32, RN50x64"
+        print(clip_variant, device)
+        
+        if clip_variant=="ViT-L/14" and hidden_state:
+            from transformers import CLIPVisionModelWithProjection, CLIPTextModelWithProjection, CLIPTokenizer
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained(path).eval()
+            image_encoder = image_encoder.to(device)
+            for param in image_encoder.parameters():
+                param.requires_grad = False # dont need to calculate gradients
+            self.image_encoder = image_encoder
+
+            text_encoder = CLIPTextModelWithProjection.from_pretrained(path).eval()
+            text_encoder = text_encoder.to(device)
+            for param in text_encoder.parameters():
+                param.requires_grad = False # dont need to calculate gradients
+            self.text_encoder = text_encoder
+            self.tokenizer = CLIPTokenizer.from_pretrained(path)
+
+        elif hidden_state:
+            raise Exception("hidden_state embeddings only works with ViT-L/14 right now")
+        
+        self.clip_variant = clip_variant
+        if clip_variant == "RN50x64":
+            self.clip_size = (448,448)
+        else:
+            self.clip_size = (224,224)
+            
+        preproc = transforms.Compose([
+            transforms.Resize(size=self.clip_size[0], interpolation=transforms.InterpolationMode.BICUBIC, antialias=None),
+            transforms.CenterCrop(size=self.clip_size),
+            transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+        ])
+        self.preprocess = preproc
+        self.hidden_state = hidden_state
+        self.mean = np.array([0.48145466, 0.4578275, 0.40821073])
+        self.std = np.array([0.26862954, 0.26130258, 0.27577711])
+        self.normalize = transforms.Normalize(self.mean, self.std)
+        self.denormalize = transforms.Normalize((-self.mean / self.std).tolist(), (1.0 / self.std).tolist())
+        self.clamp_embs = clamp_embs
+        self.norm_embs = norm_embs
+        self.device= device
+        
+        def versatile_normalize_embeddings(encoder_output):
+            embeds = encoder_output.last_hidden_state
+            embeds = image_encoder.vision_model.post_layernorm(embeds)
+            embeds = image_encoder.visual_projection(embeds)
+            return embeds
+        self.versatile_normalize_embeddings = versatile_normalize_embeddings
+
+    def resize_image(self, image):
+        # note: antialias should be False if planning to use Pinkney's Image Variation SD model
+        return transforms.Resize(self.clip_size, antialias=None)(image.to(self.device))
+
+    def embed_image(self, image):
+        """Expects images in -1 to 1 range"""
+        clip_emb = self.preprocess((image).to(self.device))
+        clip_emb = self.image_encoder(clip_emb)
+        clip_emb = self.versatile_normalize_embeddings(clip_emb)
+
+        # input is now in CLIP space, but mind-reader preprint further processes embeddings:
+        if self.clamp_embs:
+            clip_emb = torch.clamp(clip_emb, -1.5, 1.5)
+        if self.norm_embs:
+            if self.hidden_state:        
+                # normalize all tokens by cls token's norm
+                clip_emb = clip_emb / torch.norm(clip_emb[:, 0], dim=-1).reshape(-1, 1, 1)
+            else:
+                clip_emb = nn.functional.normalize(clip_emb, dim=-1)
+        return clip_emb
+    
+    def embed_text(self, prompt):
+        r"""
+        Encodes the prompt into text encoder hidden states.
+
+        Args:
+            prompt (`str` or `List[str]`):
+                prompt to be encoded
+            device: (`torch.device`):
+                torch device
+            num_images_per_prompt (`int`):
+                number of images that should be generated per prompt
+            do_classifier_free_guidance (`bool`):
+                whether to use classifier free guidance or not
+        """
+
+        def normalize_embeddings(encoder_output):
+            embeds = self.text_encoder.text_projection(encoder_output.last_hidden_state)
+            embeds_pooled = encoder_output.text_embeds
+            embeds = embeds / torch.norm(embeds_pooled.unsqueeze(1), dim=-1, keepdim=True)
+            return embeds
+
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        untruncated_ids = self.tokenizer(prompt, padding="max_length", return_tensors="pt").input_ids
+        with torch.no_grad():
+            prompt_embeds = self.text_encoder(
+                text_input_ids.to(self.device),
+            )
+        prompt_embeds = normalize_embeddings(prompt_embeds)
+
+        # duplicate text embeddings for each generation per prompt, using mps friendly method
+        # bs_embed, seq_len, _ = prompt_embeds.shape
+        # prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+        # prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+        return prompt_embeds
+
+    def embed_curated_annotations(self, annots):
+        for i,b in enumerate(annots):
+            t = ''
+            while t == '':
+                rand = torch.randint(5,(1,1))[0][0]
+                t = b[0,rand]
+            if i==0:
+                txt = np.array(t)
+            else:
+                txt = np.vstack((txt,t))
+        txt = txt.flatten()
+        return self.embed_text(txt)
+ 
+class EEGDataset():
+    """
+    subjects = ['sub-01', 'sub-02', 'sub-05', 'sub-04', 'sub-03', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10']
+    """
+    def __init__(self, data_path, exclude_subject=None, subjects=None, train=True, time_window=[0, 1.0], classes = None, pictures = None, selected_ch=None):
+        self.data_path = data_path
+        self.img_directory_training = os.path.join(self.data_path,'../','Image_set','train_images')
+        self.img_directory_test = os.path.join(self.data_path,'../','Image_set','test_images')
+
+        self.train = train
+        self.subject_list = os.listdir(data_path)
+        self.subjects = self.subject_list if subjects is None else subjects
+        self.n_sub = len(self.subjects)
+        self.time_window = time_window
+        self.n_cls = 1654 if train else 200
+        self.classes = classes
+        self.pictures = pictures
+        self.exclude_subject = exclude_subject
+        self.selected_ch = selected_ch
+        model_type = 'openai/clip-vit-large-patch14'
+
+        # assert any subjects in subject_list
+        assert any(sub in self.subject_list for sub in self.subjects)
+
+        self.data, self.labels, self.text, self.img = self.load_data()
+
+        
+        self.data = self.extract_eeg(self.data, time_window)
+    
+        if self.classes is None and self.pictures is None:
+            # Try to load the saved features if they exist
+            features_filename = os.path.join(f'{model_type}_features_train.pt') if self.train else os.path.join(f'{model_type}_features_test.pt')
+            
+            if os.path.exists(features_filename) :
+                saved_features = torch.load(features_filename)
+                self.text_features = saved_features['text_features']
+                self.img_features = saved_features['img_features']
+
+            else:
+                self.extractor = Clipper('ViT-L/14', path='/root/workspace/wht/pretrained/clip-vit-large-patch14',device=device, hidden_state=True, norm_embs=True)
+                self.text_features = self.Textencoder(self.text)
+                self.img_features = self.ImageEncoder(self.img)
+                
+                torch.save({
+                    'text_features': self.text_features.cpu(),
+                    'img_features': self.img_features.cpu(),
+                }, features_filename)
+        else:
+            pass
+            # self.text_features = self.Textencoder(self.text)
+            # self.img_features = self.ImageEncoder(self.img)
+
+        # print(self.text)
+        # print(self.text_features.shape)
+
+        print(self.text_features.shape)
+        print(self.img_features.shape)
+        print(self.data.shape)
+    def load_data(self):
+        data_list = []
+        label_list = []
+        texts = []
+        images = []
+        
+        if self.train:
+            img_directory = self.img_directory_training
+        else:
+            img_directory = self.img_directory_test
+        
+        dirnames = [d for d in os.listdir(img_directory) if os.path.isdir(os.path.join(img_directory, d))]
+        dirnames.sort()
+        
+        if self.classes is not None:
+            dirnames = [dirnames[i] for i in self.classes]
+
+        for dir in dirnames:
+            
+            try:
+                idx = dir.index('_')
+                description = dir[idx+1:]  
+            except ValueError:
+                print(f"Skipped: {dir} due to no '_' found.")
+                continue
+                
+            new_description = f"This is a {description}."
+            texts.append(new_description)
+
+
+        all_folders = [d for d in os.listdir(img_directory) if os.path.isdir(os.path.join(img_directory, d))]
+        all_folders.sort()  
+
+        if self.classes is not None and self.pictures is not None:
+            images = []  
+            for i in range(len(self.classes)):
+                class_idx = self.classes[i]
+                pic_idx = self.pictures[i]
+                if class_idx < len(all_folders):
+                    folder = all_folders[class_idx]
+                    folder_path = os.path.join(img_directory, folder)
+                    all_images = [img for img in os.listdir(folder_path) if img.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                    all_images.sort()
+                    if pic_idx < len(all_images):
+                        images.append(os.path.join(folder_path, all_images[pic_idx]))
+        elif self.classes is not None and self.pictures is None:
+            images = []  
+            for i in range(len(self.classes)):
+                class_idx = self.classes[i]
+                if class_idx < len(all_folders):
+                    folder = all_folders[class_idx]
+                    folder_path = os.path.join(img_directory, folder)
+                    all_images = [img for img in os.listdir(folder_path) if img.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                    all_images.sort()
+                    images.extend(os.path.join(folder_path, img) for img in all_images)
+        elif self.classes is None:
+            images = []  
+            for folder in all_folders:
+                folder_path = os.path.join(img_directory, folder)
+                all_images = [img for img in os.listdir(folder_path) if img.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                all_images.sort()  
+                images.extend(os.path.join(folder_path, img) for img in all_images)
+        else:
+            
+            print("Error")
+            
+        # print("self.subjects", self.subjects)
+        # print("exclude_subject", self.exclude_subject)
+        for subject in self.subjects:
+            if self.train:
+                if subject == self.exclude_subject:  
+                    continue            
+                # print("subject:", subject)    
+                file_name = 'preprocessed_eeg_training.npy'
+
+                file_path = os.path.join(self.data_path, subject, file_name)
+                data = np.load(file_path, allow_pickle=True)
+                
+                preprocessed_eeg_data = torch.from_numpy(data['preprocessed_eeg_data']).float().detach()                
+                times = torch.from_numpy(data['times']).detach()[50:]
+                ch_names = data['ch_names']  
+
+                n_classes = 1654  
+                samples_per_class = 10  
+                
+                if self.classes is not None and self.pictures is not None:
+                    for c, p in zip(self.classes, self.pictures):
+                        start_index = c * 1 + p
+                        if start_index < len(preprocessed_eeg_data):  
+                            preprocessed_eeg_data_class = preprocessed_eeg_data[start_index: start_index+1]  
+                            labels = torch.full((1,), c, dtype=torch.long).detach()  
+                            data_list.append(preprocessed_eeg_data_class)
+                            label_list.append(labels)  
+
+                elif self.classes is not None and self.pictures is None:
+                    for c in self.classes:
+                        start_index = c * samples_per_class
+                        preprocessed_eeg_data_class = preprocessed_eeg_data[start_index: start_index+samples_per_class]
+                        labels = torch.full((samples_per_class,), c, dtype=torch.long).detach()  
+                        data_list.append(preprocessed_eeg_data_class)
+                        label_list.append(labels)
+
+                else:
+                    for i in range(n_classes):
+                        start_index = i * samples_per_class
+                        # if self.exclude_subject==None:
+                        #     preprocessed_eeg_data_class = preprocessed_eeg_data[start_index: start_index+samples_per_class]
+                        # else:
+                        preprocessed_eeg_data_class = preprocessed_eeg_data[start_index: start_index+samples_per_class]
+                        # print("preprocessed_eeg_data_class", preprocessed_eeg_data_class.shape)
+                        # preprocessed_eeg_data_class = torch.mean(preprocessed_eeg_data_class, 1)
+                        # preprocessed_eeg_data_class = torch.mean(preprocessed_eeg_data_class, 0)
+                        # print("preprocessed_eeg_data_class", preprocessed_eeg_data_class.shape)
+                        labels = torch.full((samples_per_class,), i, dtype=torch.long).detach()  
+                        
+                        data_list.append(preprocessed_eeg_data_class)
+                        label_list.append(labels)
+
+                 
+            else:
+                if subject == self.exclude_subject or self.exclude_subject==None:  
+                    file_name = 'preprocessed_eeg_test.npy'
+                    file_path = os.path.join(self.data_path, subject, file_name)
+                    data = np.load(file_path, allow_pickle=True)
+                    preprocessed_eeg_data = torch.from_numpy(data['preprocessed_eeg_data']).float().detach()
+                    times = torch.from_numpy(data['times']).detach()[50:]
+                    ch_names = data['ch_names']  
+                    n_classes = 200  # Each class contains 1 images
+                    
+                    samples_per_class = 1  
+
+                    for i in range(n_classes):
+                        if self.classes is not None and i not in self.classes:  # If we've defined specific classes and the current class is not in the list, skip
+                            continue
+                        start_index = i * samples_per_class  # Update start_index for each class
+                        preprocessed_eeg_data_class = preprocessed_eeg_data[start_index:start_index+samples_per_class]
+                        # print("preprocessed_eeg_data_class", preprocessed_eeg_data_class.shape)
+                        labels = torch.full((samples_per_class,), i, dtype=torch.long).detach()  # Add class labels
+                        preprocessed_eeg_data_class = torch.mean(preprocessed_eeg_data_class.squeeze(0), 0)
+                        # print("preprocessed_eeg_data_class", preprocessed_eeg_data_class.shape)
+                        data_list.append(preprocessed_eeg_data_class)
+                        label_list.append(labels)  # Add labels to the label list
+                else:
+                    continue
+        # datalist: (subjects * classes) * (10 * 4 * 17 * 100)
+        # data_tensor: (subjects * classes * 10 * 4) * 17 * 100
+        # data_list = np.mean(data_list, )
+        # print("data_list", len(data_list))
+        if self.train:
+            # print("data_list", *data_list[0].shape[1:])            
+            data_tensor = torch.cat(data_list, dim=0).view(-1, *data_list[0].shape[2:])                 
+            # data_tensor = torch.cat(data_list, dim=0).view(-1, *data_list[0].shape[1:])
+            # data_tensor = torch.cat(data_list, dim=0).view(-1, *data_list[0].shape)   
+            # print("label_tensor", label_tensor.shape)
+            # print("data_tensor", data_tensor.shape)
+        else:           
+            data_tensor = torch.cat(data_list, dim=0).view(-1, *data_list[0].shape)   
+            # label_tensor = torch.cat(label_list, dim=0)
+            # print("label_tensor", label_tensor.shape)
+            # data_tensor = torch.cat(data_list, dim=0).view(-1, *data_list[0].shape[2:])
+        # print("data_tensor", data_tensor.shape)
+        # label_list: (subjects * classes) * 10
+        # label_tensor: (subjects * classes * 10)
+        # print("label_tensor = torch.cat(label_list, dim=0)")
+        # print(label_list)
+        label_tensor = torch.cat(label_list, dim=0)
+        # label_tensor = torch.cat(label_list, dim=0)
+        # print(label_tensor[:300])
+        
+
+        # print(label_tensor.shape)
+        
+        if self.train:
+            # label_tensor: (subjects * classes * 10 * 4)
+            label_tensor = label_tensor.repeat_interleave(4)
+            if self.classes is not None:
+                unique_values = list(label_tensor.numpy())
+                lis = []
+                for i in unique_values:
+                    if i not in lis:
+                        lis.append(i)
+                unique_values = torch.tensor(lis)
+                
+                mapping = {val.item(): index for index, val in enumerate(unique_values)}   
+                label_tensor = torch.tensor([mapping[val.item()] for val in label_tensor], dtype=torch.long)
+                
+        else:
+            # label_tensor = label_tensor.repeat_interleave(80)
+            # if self.classes is not None:
+            #     unique_values = torch.unique(label_tensor, sorted=False)
+           
+            #     mapping = {val.item(): index for index, val in enumerate(torch.flip(unique_values, [0]))}
+            #     label_tensor = torch.tensor([mapping[val.item()] for val in label_tensor], dtype=torch.long)
+            pass      
+
+                    
+        self.times = times
+        self.ch_names = ch_names
+
+        if self.selected_ch == None :
+            self.selected_ch = ch_names
+        selected_indices = [self.ch_names.index(ch) for ch in self.selected_ch]
+
+        data_tensor = data_tensor[:, selected_indices, :]
+    
+
+        # print(f"Data tensor shape: {data_tensor.shape}, label tensor shape: {label_tensor.shape}, text length: {len(texts)}, image length: {len(images)}")
+        
+        return data_tensor, label_tensor, texts, images
+
+    def extract_eeg(self, eeg_data, time_window):
+
+        start, end = time_window
+
+        # Get the indices of the times within the specified window
+        indices = (self.times >= start) & (self.times <= end)
+
+        extracted_data = eeg_data[..., indices]
+        return extracted_data
+    
+    def Textencoder(self, text):   
+        return self.extractor.embed_text(text).float()[:,-1]
+    
+    def ImageEncoder(self,images):
+        batch_size = 20  
+        image_features_list = []
+        transform = transforms.ToTensor()
+
+        for i in range(0, len(images), batch_size):
+            batch_images = images[i:i + batch_size]
+            image = (torch.stack([transform(Image.open(img).convert("RGB")) for img in batch_images])).to(device)
+            batch_image_features = self.extractor.embed_image(image).float()[:,0]
+            image_features_list.append(batch_image_features)
+        image_features = torch.cat(image_features_list, dim=0)
+        return image_features
+    
+    def __getitem__(self, index):
+        # Get the data and label corresponding to "index"
+        # index: (subjects * classes * 10 * 4)
+        x = self.data[index]
+        label = self.labels[index]
+        
+        if self.pictures is None:
+            if self.classes is None:
+                index_n_sub_train = self.n_cls * 10 * 4
+                index_n_sub_test = self.n_cls * 1 * 80
+            else:
+                index_n_sub_train = len(self.classes)* 10 * 4
+                index_n_sub_test = len(self.classes)* 1 * 80
+            # text_index: classes
+            if self.train:
+                text_index = (index % index_n_sub_train) // (10 * 4)
+            else:
+                # text_index = (index % index_n_sub_test) // (1 * 80)
+                text_index = index
+            # img_index: classes * 10
+            if self.train:
+                img_index = (index % index_n_sub_train) // (4)
+            else:
+                # img_index = (index % index_n_sub_test) // (80)
+                img_index = index
+            # print(f"index:{index},index_n_sub_train:{index_n_sub_train}, text_index:{text_index} img_index:{img_index}")
+        else:
+            if self.classes is None:
+                index_n_sub_train = self.n_cls * 1 * 4
+                index_n_sub_test = self.n_cls * 1 * 80
+            else:
+                index_n_sub_test = len(self.classes)* 1 * 80
+                index_n_sub_train = len(self.classes)* 1 * 4
+            # text_index: classes
+            if self.train:
+                text_index = (index % index_n_sub_train) // (1 * 4)
+            else:
+                text_index = (index % index_n_sub_test) // (1 * 80)
+        
+                
+            # img_index: classes * 10
+            if self.train:
+                img_index = (index % index_n_sub_train) // (4)
+            else:
+                img_index = (index % index_n_sub_test) // (80)
+                
+                
+        text = self.text[text_index]
+        img = self.img[img_index]
+        
+        text_features = self.text_features[text_index]
+        img_features = self.img_features[img_index]
+        
+        # print(f'index:{index} img_index:{img_index} text_index:{text_index}')
+        
+        return x, label, text, text_features, img, img_features
+
+    def __len__(self):
+        return self.data.shape[0]  # or self.labels.shape[0] which should be the same
+
+
+if __name__ == "__main__":
+    # Instantiate the dataset and dataloader
+    # data_path = "/home/ldy/Workspace/THINGS/EEG/osfstorage-archive"  # Replace with the path to your data
+    
+    data_path = config["data_path"]
+    
+    data_path = data_path
+    train_dataset = EEGDataset(data_path, subjects = ['sub-01'], train=True)
+    test_dataset = EEGDataset(data_path, subjects = ['sub-01'], train=False)
+    # train_dataset = EEGDataset(data_path, exclude_subject = 'sub-01', train=True)    
+    # test_dataset = EEGDataset(data_path, exclude_subject = 'sub-01', train=False)    
+    # train_dataset = EEGDataset(data_path, train=True)
+    # test_dataset = EEGDataset(data_path, train=False)
+    
+    # 100 Hz
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=True)
+    
+    i = 80*1-1
+    x, label, text, text_features, img, img_features  = test_dataset[i]
+    print(f"Index {i}, Label: {label}, text: {text}")
+    Image.open(img)
+            
+    
+        
+    

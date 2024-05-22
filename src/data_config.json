@@ -1,0 +1,6 @@
+{
+    "data_path": "/root/workspace/wht/multimodal_brain/datasets/things-eeg-small/Preprocessed_data_250Hz",
+    "img_directory_training": "/root/workspace/wht/multimodal_brain/datasets/things-eeg-small/Image_set/train_images",
+    "img_directory_test": "/root/workspace/wht/multimodal_brain/datasets/things-eeg-small/Image_set/test_images",
+    "features_path":"/root/workspace/wht/multimodal_brain/datasets/things-eeg-small/CLIP"
+}
