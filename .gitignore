@@ -3,6 +3,10 @@ datasets/**
 fMRI-reconstruction-NSD/
 fMRI-reconstruction-NSD/**
 
+
+.vscode/
+.vscode/**
+
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
 
