@@ -21,7 +21,7 @@ from sklearn.metrics import accuracy_score
 from models.mlp import MLP,ProjectLayer,Direct
 
 
-from datasets import SingleEEGDataset
+from dataset.datasets import SingleEEGDataset
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

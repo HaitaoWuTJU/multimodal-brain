@@ -17,55 +17,57 @@ class MLP(nn.Module):
 
         self.input_dim = input_dim
         self.fcs=nn.ModuleList()
-        
+        self.hiden_dims=hiden_dims
         last_dim = input_dim
         for hiden_dim in hiden_dims:
-            _ = nn.Linear(last_dim,hiden_dim) 
-            self.fcs.append(_)
-
+            self.fcs.append(nn.Linear(last_dim,hiden_dim) )
+            
+            self.fcs.append(nn.BatchNorm1d(hiden_dim))
+            self.fcs.append(nn.ReLU())
+            
             last_dim = hiden_dim
 
-        _ = nn.Linear(last_dim,output_dim) 
-        
-        self.dropout = nn.Dropout(0.5)
-        self.fcs.append(_)
+        # self.dropout = nn.Dropout(0.3)
+        self.fcs.append(nn.Linear(last_dim,output_dim) )
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def forward(self, x):
-        x = x.view(-1, self.input_dim)
+        x = x.view(x.shape[0], self.input_dim)
         for fc in self.fcs[:-1]:
-            print(1)
-            x = torch.relu(fc(x)) 
-            print(x.shape)
-        x = self.dropout(x)
+            x = fc(x)
+            
+        if hasattr(self, 'dropout'):
+            x = self.dropout(x)
         x = self.fcs[-1](x)
         return x
 
 class ResidualAdd(nn.Module):
-    def __init__(self, fn):
+    def __init__(self, f):
         super().__init__()
-        self.fn = fn
+        self.f = f
 
-    def forward(self, x, **kwargs):
-        res = x
-        x = self.fn(x, **kwargs)
-        x += res
-        return x
+    def forward(self, x):
+        return  x + self.f(x)
 
-class ProjectLayer(nn.Sequential):
+class ProjectLayer(nn.Module):
     def __init__(self, embedding_dim, proj_dim, drop_proj=0.3):
-        super(ProjectLayer, self).__init__(
-            nn.Linear(embedding_dim, proj_dim),
+        super(ProjectLayer, self).__init__()
+        self.embedding_dim = embedding_dim
+    
+        self.model = nn.Sequential(nn.Linear(embedding_dim, proj_dim),
             ResidualAdd(nn.Sequential(
                 nn.GELU(),
                 nn.Linear(proj_dim, proj_dim),
                 nn.Dropout(drop_proj),
             )),
-            nn.LayerNorm(proj_dim),
-        )
+            nn.LayerNorm(proj_dim))
+        
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         
     def forward(self, x):
+        x = x.view(x.shape[0], self.embedding_dim)
+        x = self.model(x)
         return x 
 
 if __name__=='__main__':

@@ -5,6 +5,7 @@ from os.path import join as pjoin
 from PIL import Image
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 import torch,os
 import open_clip
 from torch.utils.data import DataLoader

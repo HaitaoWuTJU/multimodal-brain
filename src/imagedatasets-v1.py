@@ -7,10 +7,11 @@ import pandas as pd
 from tqdm import tqdm
 import os
 from PIL import Image
+import clip
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-vlmodel, preprocess, _ = open_clip.create_model_and_transforms('ViT-H-14', pretrained='laion2b_s32b_b79k', precision='fp32', device = device)
-
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+vlmodel, preprocess, _ = open_clip.create_model_and_transforms('ViT-bigG-14',pretrained='laion2b_s39b_b160k', precision='fp32', device = device)
+# vlmodel, preprocess = clip.load('ViT-L/14@336px', device=device)
 class ThingsDataset():
     def __init__(self, data_root, mode='test'):
         self.data_root = data_root
@@ -51,6 +52,7 @@ if __name__=='__main__':
     classes = test_dataset.classes
     class_descriptions = [f"This is a {cls}." for cls in classes] 
     text_tokens = open_clip.tokenize(class_descriptions).to(device)
+    # text_tokens = clip.tokenize(class_descriptions).to(device)
     test_dataloader = DataLoader(test_dataset, batch_size=200, shuffle=False)  # Adjust batch_size according to your needs
     results = []
     
@@ -63,7 +65,7 @@ if __name__=='__main__':
         with torch.no_grad():
             image_features = vlmodel.encode_image(images)
             image_features /= image_features.norm(dim=-1, keepdim=True)
-            
+        print(image_features.shape)
         similarity = (image_features @ text_features.T).cpu()
         predictions = similarity.argmax(dim=-1)
         return [classes[pred] for pred in predictions]
@@ -73,7 +75,6 @@ if __name__=='__main__':
     for i,batch in tqdm(enumerate(test_dataloader)):
         images, labels = batch
         predicted_classes = predict_class(images)
-        
         all_predicted_classes.extend(predicted_classes)
         all_true_labels.extend(labels) 
         
