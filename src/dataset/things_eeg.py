@@ -27,13 +27,13 @@ class CustomDataset(Dataset):
         
         # montage = mne.channels.read_custom_montage('BC-22-re.bvef')
         # raw.set_montage(montage)
-        # print(raw.info)
+        # logging.info(raw.info)
 
         events = mne.events_from_annotations(raw)
         
         
         # raw.pick_channels(chan_order, ordered=True) 
-        print(events)
+        logging.info(events)
         
     def __len__(self):
         return len(self.data)
@@ -103,7 +103,7 @@ class EEGDataset():
             self.all_image_features = torch.from_numpy(np.concatenate([self.img_features[k].unsqueeze(0) for k in self.img_features])).to(device)
     
     def load_data(self,data_path):
-        print(f"----load {data_path.rsplit('250HZ',1)[-1]}----")
+        logging.info(f"----load {data_path.rsplit('250HZ',1)[-1]}----")
         loaded_data = torch.load(data_path)
         loaded_data['eeg']=torch.from_numpy(loaded_data['eeg'])
         

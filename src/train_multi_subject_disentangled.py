@@ -85,7 +85,7 @@ def train_subject(config,data,model,args):
             
             semantic_logits = model['aux'](semantic_features)
             bias_logits = model['aux2'](bias_features)
-            target_tensor = torch.full((eeg_features.shape[0], 10), 0.25, device=device)
+            target_tensor = torch.full((eeg_features.shape[0], 10), 0.1, device=device)
             prediction = torch.argmax(semantic_logits, dim=1)
             tot_cnt_subject+=eeg.shape[0]
             tot_correct_cnt_subject+=sum(prediction==subject)
@@ -120,7 +120,7 @@ def train_subject(config,data,model,args):
               
         train_acc =  tot_correct_cnt/tot_cnt
         logging.info(f"Epoch {epoch + 1}, Train ACC: {train_acc:.3f}")
-        torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"ckpt_{'_'.join(args['subjects'])}.pth"))
+        torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"ckpt_{epoch}_{'_'.join(args['subjects'])}.pth"))
         
         logging.info(f"Train Subject-ACC: {tot_correct_cnt_subject/tot_cnt_subject:.3f}")
         top_1_accuracy,top_k_accuracy,accuracy_n_way = eval_subject(config,data,model,args)
@@ -132,7 +132,7 @@ def train_subject(config,data,model,args):
             args['best_epoch'] = epoch
             args['best_train_acc'] = train_acc
     
-            torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(args['subjects'])}.pth"))
+            torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"best_ckpt_{epoch}_{'_'.join(args['subjects'])}.pth"))
         logging.info(f"Test Top1-ACC: {top_1_accuracy:.3f},Top5-ACC: {top_k_accuracy:.3f} {tag}")
         
     return args
@@ -265,7 +265,7 @@ def main():
         "model_type":model_type,
         "latend_dim":latend_dim,
         "logger": True,
-        "subjects": ['sub-08'],#['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
+        "subjects": ['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
         # "eeg":{'name':'ProjectLayer','args':{'embedding_dim':len(selected_ch)*250, 'proj_dim':latend_dim}},
         "eeg":{'name':'Autoencoder','args':{'in_chans':len(selected_ch)}},
         # "eeg_model":{'name':'MLP','args':{'input_dim':len(selected_ch)*250,'output_dim':latend_dim,'hiden_dims':[]}},#{'name':'LSTMModel', 'args':{}},

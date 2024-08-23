@@ -1,0 +1,32 @@
+version: 36
+
+models:
+  # eeg: 
+  #   name: Autoencoder
+  #   args:
+  #       in_chans: 17
+    # name: ProjectLayer
+    # args: 
+    #   embedding_dim: 4250
+    #   proj_dim: 512
+  generation:
+    name: StableDiffusionXLPipeline
+    args:
+        pretrained_model_name_or_path: stabilityai/stable-diffusion-xl-base-1.0
+        torch_dtype: torch.float16
+        use_safetensors: true
+        variant: fp16
+data:
+  data_dir: /dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz_whiten
+  subjects: ['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10']
+  selected_ch: ['P7', 'P5', 'P3', 'P1','Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8','O1', 'Oz', 'O2']
+  clip_feature: ViT-B-32
+  train_val_rate: 0.7
+  batch_size: 512
+
+train:
+  loss: MultilabelClipLoss
+  epoch: 50
+  lr: 1e-5
+  lr_eta_min: 1e-6
+  scheduler: CosineAnnealingLR

@@ -61,6 +61,9 @@ def train_subject(config,data,model,args):
             v.train()
         tot_cnt=0+1e-8
         tot_correct_cnt= 0
+        
+        clip_loss = ClipLoss()
+        mse_loss = nn.MSELoss()
         for i,sample in enumerate(data['train']):
             
             eeg, label, img, img_features,text, text_features,session,subject = sample #x:[63, 250], label:1024 text:text text_features:[1024, 1024] img:1024 img_features:[1024, 1024]
@@ -75,11 +78,15 @@ def train_subject(config,data,model,args):
 
             logit_scale = model['eeg'].logit_scale#.exp()
             
-            eeg_img_loss = args['criterion'](eeg_features, img_features,logit_scale)
-            eeg_text_loss = args['criterion'](eeg_features, text_features,logit_scale)
-            text_img_loss = args['criterion'](text_features, img_features,logit_scale)
+            eeg_img_clip_loss = clip_loss(eeg_features, img_features,logit_scale)
+            eeg_text_clip_loss = clip_loss(eeg_features, text_features,logit_scale)
+            text_img_clip_loss = clip_loss(text_features, img_features,logit_scale)
             
-            loss = eeg_img_loss
+            eeg_img_mse_loss = mse_loss(eeg_features, img_features)
+            eeg_text_mse_loss = mse_loss(eeg_features, text_features)
+            text_img_mse_loss = mse_loss(text_features, img_features)
+            
+            loss = 100*eeg_img_mse_loss + eeg_img_clip_loss
             args['optimizer'].zero_grad()
             loss.backward()
             args['optimizer'].step()
@@ -95,11 +102,11 @@ def train_subject(config,data,model,args):
             tot_correct_cnt+=correct_count
             
             if (i+1) % 10 == 0:
-                logging.info(f"Epoch {epoch + 1}, Iteration {i}, Loss: {loss.item():.4f} text_img_loss:{text_img_loss.item():.4f}")
+                logging.info(f"Epoch {epoch + 1}, Iteration {i}, CLip:{eeg_img_clip_loss.item():.4f} MSE:{eeg_img_mse_loss.item():.4f}")
                 
         train_acc = tot_correct_cnt/tot_cnt
         logging.info(f"Epoch {epoch + 1}, Train ACC: {train_acc:.3f}")
-        torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"ckpt_{'_'.join(args['subjects'])}.pth"))
+        torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"ckpt_{epoch}_{'_'.join(args['subjects'])}.pth"))
         
         top_1_accuracy,top_k_accuracy,accuracy_n_way = eval_subject(config,data,model,args)
 
@@ -117,6 +124,7 @@ def eval_subject(config,data,model,eval_args):
     
     for k,v in model.items():
         v.eval()
+        
     n_way = eval_args['n_way'] if 'n_way' in eval_args.keys() else False
     all_predicted_classes = []
     all_true_labels = []
@@ -126,9 +134,8 @@ def eval_subject(config,data,model,eval_args):
     all_text_features=data['test'].dataset.all_text_features
     all_image_features=data['test'].dataset.all_image_features
     
-    all_text_features = all_text_features/all_text_features.norm(dim=-1, keepdim=True)
-    all_image_features = all_image_features/all_image_features.norm(dim=-1, keepdim=True)
-    all_image_features = all_image_features.to(device)
+    all_text_features = all_text_features/all_text_features.norm(dim=-1, keepdim=True).to(device)
+    all_image_features = all_image_features/all_image_features.norm(dim=-1, keepdim=True).to(device)
 
     for i,sample in enumerate(data['test']):
         eeg, label, img, img_features,text, text_features ,session,subject = sample
@@ -219,15 +226,16 @@ def main():
         "data_dir": "/dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz_whiten",#"/dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz/",
         "exp_root":'./exp',
         "device":device,
-        "name": os.path.basename(__file__).rsplit('.',1)[0],
+        "name": 'mse100_clip_loss',#os.path.basename(__file__).rsplit('.',1)[0],
         "lr": 1e-4,
-        "epochs": 100,
+        "epochs": 200,
         "batch_size": 1024,
         "model_type":model_type,
         "latend_dim":latend_dim,
         "logger": True,
-        "subjects":['sub-08'],#['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
+        "subjects":['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
         "eeg_model":{'name':'ProjectLayer','args':{'embedding_dim':len(selected_ch)*250, 'proj_dim':latend_dim}},
+        "aux":{'name':'MLP','args':{'input_dim':latend_dim_dict[model_type],'output_dim':10,'hiden_dims':[]}},
         # "eeg_model":{'name':'MLP','args':{'input_dim':len(selected_ch)*250,'output_dim':latend_dim,'hiden_dims':[]}},#{'name':'LSTMModel', 'args':{}},
         # "img_model": {'name':'Direct','args':{}},  # {'name':'ProjectLayer', 'args':{'embedding_dim':1024, 'proj_dim':1024}},
         # "text_model": {'name':'Direct','args':{}},  # {'name':'ProjectLayer', 'args':{'embedding_dim':1024, 'proj_dim':1024}},
@@ -267,7 +275,7 @@ def main():
     
     train_eval_args = {
         'optimizer':optim.Adam([{'params': v.parameters(), 'lr': config['lr']} for k,v in model.items()]),
-        'criterion':ClipLoss(),
+        # 'criterion':,#ClipLoss(),
         'epochs':config['epochs'],
         'subjects':config['subjects'],
         'best_acc':-1,
@@ -277,9 +285,13 @@ def main():
 
     
     logging.info(f"Start training on {config['subjects']}")
-    train_subject(config,data,model,train_eval_args)
+    # train_subject(config,data,model,train_eval_args)
+    
+    
     logging.info(f"Start eval on {config['subjects']}")
-    model['eeg'].load_state_dict(torch.load(os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(config['subjects'])}.pth"),map_location=config['device'])['eeg'])
+    ckpt_path = '/root/workspace/wht/multimodal_brain/src/exp/clip_transformer_desubject_32/ckpt_7_sub-01_sub-02_sub-03_sub-04_sub-05_sub-06_sub-07_sub-08_sub-09_sub-10.pth'
+    # ckpt_path = os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(config['subjects'])}.pth")
+    model['eeg'].load_state_dict(torch.load(ckpt_path,map_location=config['device'])['eeg'])
     
     accuracy_n_way={'10':[],'4':[],'2':[]}
     for i in range(3):

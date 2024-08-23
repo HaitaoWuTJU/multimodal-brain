@@ -28,3 +28,11 @@ __pycache__/
 
 
 src/exp/**/
+
+src/archieve/**
+
+src/results/**
+
+src/tasks/img_generation/lightning_logs/**
+
+EEG_Image_decode/**
