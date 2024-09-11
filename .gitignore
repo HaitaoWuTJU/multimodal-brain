@@ -36,3 +36,14 @@ src/results/**
 src/tasks/img_generation/lightning_logs/**
 
 EEG_Image_decode/**
+
+
+**/exp/
+
+**.pth
+
+**.ckpt
+
+src/tasks/plot/U/**
+
+**/lightning_logs/**
