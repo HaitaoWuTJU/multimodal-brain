@@ -9,7 +9,7 @@ model:
       params:
         disc_start: 501
         kl_weight: 0.000001
-        disc_weight: 0.5
+        disc_weight: 0.0
         disc_in_channels: 17
 
     ddconfig:

@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader, random_split
 
 def load_data(config):
     data_config = config['data']
-    test_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='test',selected_ch=data_config['selected_ch'],transform=None,avg=False)
+
+    test_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='test',selected_ch=data_config['selected_ch'],transform=None,avg=data_config['test_avg'])
     train_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='train',selected_ch=data_config['selected_ch'],transform=None,avg=False)
 
     # train_size = len(train_dataset) * data_config['train_val_rate']
@@ -105,6 +106,7 @@ class EEGDataset():
         else:
             _data = {}
             _data['eeg'] = loaded_data['eeg'].reshape(-1,*loaded_data['eeg'].shape[2:])
+            _data['eeg_avg'] = loaded_data['eeg'].mean(axis=1)
             _data['label'] = loaded_data['label'].reshape(-1)
             _data['img'] = loaded_data['img'].reshape(-1)
             _data['text'] = loaded_data['text'].reshape(-1)
@@ -148,7 +150,9 @@ class EEGDataset():
         
         subject = index // self.trial_subject
         trial_index = index % self.trial_subject
+
         eeg = self.loaded_data[subject]['eeg'][trial_index].float()
+        eeg_mean = self.loaded_data[subject]['eeg_avg'][trial_index//4].float()
 
         label = self.loaded_data[subject]['label'][trial_index]
         img = self.loaded_data[subject]['img'][trial_index]
@@ -160,7 +164,7 @@ class EEGDataset():
         if self.transform:
             eeg = self.transform(eeg)
         
-        return eeg, label, img, img_features,text, text_features,session,subject
+        return eeg, label, img, img_features,text, text_features,session,subject,eeg_mean
 
     def __len__(self):
         return self.trial_all_subjects

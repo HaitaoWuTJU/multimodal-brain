@@ -58,7 +58,7 @@ def main():
     )
 
     ckpt_path = config.get('ckpt_path', None)
-    trainer = Trainer(strategy=DDPStrategy(find_unused_parameters=True),callbacks=[checkpoint_callback],max_epochs=config['train']['epoch'], devices=[3],accelerator='cuda',logger=logger)
+    trainer = Trainer(strategy=DDPStrategy(find_unused_parameters=True),callbacks=[checkpoint_callback],max_epochs=config['train']['epoch'], devices=[6],accelerator='cuda',logger=logger)
    
     print(trainer.logger.save_dir, trainer.logger.version)
     

@@ -83,7 +83,7 @@ class DiagonalGaussianDistribution(object):
             self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
     def sample(self):
-        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
+        x = self.mean + self.std * 6 * torch.randn(self.mean.shape).to(device=self.parameters.device)
         return x
 
     def kl(self, other=None):
@@ -518,37 +518,36 @@ class AutoencoderKL(pl.LightningModule):
         else:
             z = posterior.mode()
         dec = self.decode(z)
-        return dec, posterior
+        return dec, posterior, z
 
 
     def training_step(self, batch, batch_idx):
 
-        eeg, label, img, img_features, text, text_features, session, subject = batch
+        eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
         inputs = eeg
-        reconstructions, posterior = self(inputs)
+        reconstructions, posterior, z  = self(inputs)
 
-        opt1, opt2 = self.optimizers()
+        opt1 = self.optimizers()
         
         # train encoder+decoder+logvar
-        if self.global_step%2==0:
-        
-            aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
-            self.manual_backward(aeloss)
-            opt1.step()
-            opt1.zero_grad()
-            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
+        # if self.global_step%2==0:
+        aeloss, log_dict_ae = self.loss(eeg_mean, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.manual_backward(aeloss)
+        opt1.step()
+        opt1.zero_grad()
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
 
         # train the discriminator
-        else:
-            discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
-                                                last_layer=self.get_last_layer(), split="train")
-            self.manual_backward(discloss)
-            opt2.step()
-            opt2.zero_grad()
-            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
+        # else:
+        #     discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+        #                                         last_layer=self.get_last_layer(), split="train")
+        #     self.manual_backward(discloss)
+        #     opt2.step()
+        #     opt2.zero_grad()
+        #     self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        #     self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
 
     def plot_recon_eeg(self,data,save_path,pred_raw):
         fig, axes = plt.subplots(17, 1, figsize=(10, 34),dpi=300)
@@ -559,16 +558,16 @@ class AutoencoderKL(pl.LightningModule):
         plt.savefig(save_path, format='png')
 
     def validation_step(self, batch, batch_idx):
-        eeg, label, img, img_features, text, text_features, session, subject = batch
+        eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
         inputs = eeg
-        reconstructions, posterior = self(inputs)
-        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+        reconstructions, posterior, z = self(inputs)
+        aeloss, log_dict_ae = self.loss(eeg_mean, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="val")
 
-        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
-                                            last_layer=self.get_last_layer(), split="val")
+        # discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+        #                                     last_layer=self.get_last_layer(), split="val")
 
-        log_dict_combined = {**log_dict_ae, **log_dict_disc}
+        log_dict_combined = {**log_dict_ae}#, **log_dict_disc}
 
         self.log_dict(log_dict_combined, sync_dist=True)
 
@@ -587,9 +586,10 @@ class AutoencoderKL(pl.LightningModule):
                                   list(self.quant_conv.parameters())+
                                   list(self.post_quant_conv.parameters()),
                                   lr=lr, betas=(0.5, 0.9))
-        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
-                                    lr=lr, betas=(0.5, 0.9))
-        return [opt_ae, opt_disc], []
+        # opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+        #                             lr=lr, betas=(0.5, 0.9))
+        # return [opt_ae, opt_disc], []
+        return [opt_ae], []
 
     def get_last_layer(self):
         return self.decoder.conv_out.weight
