@@ -72,18 +72,21 @@ class Downsample(nn.Module):
         return x
 
 class DiagonalGaussianDistribution(object):
-    def __init__(self, parameters, deterministic=False):
+    def __init__(self, parameters,scale, deterministic=False):
         self.parameters = parameters
         self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
         self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
         self.deterministic = deterministic
         self.std = torch.exp(0.5 * self.logvar)
         self.var = torch.exp(self.logvar)
+
+        self.scale = scale
         if self.deterministic:
             self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
     def sample(self):
-        x = self.mean + self.std * 6 * torch.randn(self.mean.shape).to(device=self.parameters.device)
+        eps = torch.randn(self.mean.shape).to(device=self.parameters.device)
+        x = self.mean + self.std * self.scale * eps
         return x
 
     def kl(self, other=None):
@@ -93,12 +96,12 @@ class DiagonalGaussianDistribution(object):
             if other is None:
                 return 0.5 * torch.sum(torch.pow(self.mean, 2)
                                        + self.var - 1.0 - self.logvar,
-                                       dim=[1, 2])
+                                       dim=[1])
             else:
                 return 0.5 * torch.sum(
                     torch.pow(self.mean - other.mean, 2) / other.var
                     + self.var / other.var - 1.0 - self.logvar + other.logvar,
-                    dim=[1, 2])
+                    dim=[1])
 
     def nll(self, sample, dims=[1,2,3]):
         if self.deterministic:
@@ -366,7 +369,7 @@ class Decoder(nn.Module):
         in_ch_mult = (1,)+tuple(ch_mult)
         block_in = ch*ch_mult[self.num_resolutions-1]
         curr_res = resolution // 2**(self.num_resolutions-1)
-        self.z_shape = (1,z_channels,curr_res,curr_res)
+        self.z_shape = (1,z_channels,curr_res)
         print("Working with z of shape {} = {} dimensions.".format(
             self.z_shape, np.prod(self.z_shape)))
 
@@ -459,6 +462,287 @@ class Decoder(nn.Module):
 
         return h
 
+
+from timm.models.vision_transformer import Block
+class PatchEmbed1D(nn.Module):
+    """ 1 Dimensional version of data to Patch Embedding
+    """
+    def __init__(self, size=256, patch_size=16, in_chans=63, embed_dim=768):
+        super().__init__()
+        num_patches = size // patch_size
+        self.patch_shape = patch_size
+        self.size = size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+        self.in_chans = in_chans
+
+        self.proj = nn.Conv1d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self, x, **kwargs):
+        B,C, T = x.shape # batch, channel, time
+        x = self.proj(x)
+        x = x.transpose(1, 2).contiguous() # put embed_dim at the last dimension
+        return x
+
+
+def get_1d_sincos_pos_embed(embed_dim, length, cls_token=False):
+    """
+    grid_size: int of the grid height and width
+    return:
+    pos_embed: [grid_size*grid_size, embed_dim] or [1+grid_size*grid_size, embed_dim] (w/ or w/o cls_token)
+    """
+    grid_l = np.arange(length, dtype=np.float32)
+
+    grid_l = grid_l.reshape([1, length])
+    pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid_l)
+    if cls_token:
+        pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
+    return pos_embed
+
+def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+    """
+    embed_dim: output dimension for each position
+    pos: a list of positions to be encoded: size (M,)
+    out: (M, D)
+    """
+    assert embed_dim % 2 == 0
+    omega = np.arange(embed_dim // 2, dtype=float)
+    omega /= embed_dim / 2.
+    omega = 1. / 10000**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+
+    emb_sin = np.sin(out) # (M, D/2)
+    emb_cos = np.cos(out) # (M, D/2)
+
+    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    return emb
+
+class Autoencoder_Transformer(nn.Module):
+    def __init__(self,size = 250 ,patch_size=25 ,in_chans=17,embed_dim=512,depth=24,num_heads=16,mlp_ratio=1.,decoder_embed_dim=512,decoder_depth=8,decoder_num_heads=16,norm_layer=nn.LayerNorm,norm_pix_loss=False):
+        super(Autoencoder_Transformer, self).__init__()
+        #patch embed
+        self.patch_embed = PatchEmbed1D(size = size,patch_size = patch_size,in_chans=in_chans,embed_dim=embed_dim)
+
+        #pos embed
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
+
+        # Encoder
+        self.blocks = nn.ModuleList([
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            for i in range(depth)])
+        self.norm = norm_layer(embed_dim)
+        
+        # Decoder
+        self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
+
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1,self.patch_embed.num_patches + 1, decoder_embed_dim), requires_grad=False)
+        self.decoder_blocks = nn.ModuleList([
+                    Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+                    for i in range(decoder_depth)])
+
+        self.decoder_norm = norm_layer(decoder_embed_dim)
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size * in_chans, bias=True) # decoder to patch
+        
+        self.norm_pix_loss = norm_pix_loss
+        
+        self.initialize_weights()
+        
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+        self.in_chans = in_chans
+        
+    def initialize_weights(self):
+        # initialization
+        # initialize (and freeze) pos_embed by sin-cos embedding
+        pos_embed = get_1d_sincos_pos_embed(self.pos_embed.shape[-1], self.patch_embed.num_patches, cls_token=True)
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+        decoder_pos_embed = get_1d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], self.patch_embed.num_patches, cls_token=True)
+        self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
+
+        # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
+        w = self.patch_embed.proj.weight.data
+        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+
+        # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
+        torch.nn.init.normal_(self.cls_token, std=.02)
+        torch.nn.init.normal_(self.mask_token, std=.02)
+
+        # initialize nn.Linear and nn.LayerNorm
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            # we use xavier_uniform following official JAX ViT:
+            torch.nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+         
+    def patchify(self, x):
+        """
+        x: (N, in_chans, T)
+        x: (N, L, patch_size)
+        """
+        p = self.patch_embed.patch_size
+        assert x.ndim == 3 and x.shape[2] % p == 0
+
+        h = x.shape[2] // p
+        
+        x = x.reshape(x.shape[0],h,p*self.in_chans)
+        return x
+    
+    def unpatchify(self, x):
+        """
+        x: (N, L, patch_size)
+        imgs: (N, in_chans, T)
+        """
+
+        x = x.reshape(x.shape[0], self.in_chans, -1)
+        return x
+       
+    def random_masking(self, x, mask_ratio):
+        """
+        Perform per-sample random masking by per-sample shuffling.
+        Per-sample shuffling is done by argsort random noise.
+        x: [N, L, D], sequence
+        """
+        N, L, D = x.shape  # batch, length, dim
+        len_keep = int(L * (1 - mask_ratio))
+        
+        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
+        
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=x.device)
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_masked, mask, ids_restore
+    
+    def forward_encoder(self, x, mask_ratio):
+        # embed patches
+        x = self.patch_embed(x)
+
+        # add pos embed w/o cls token
+        x = x + self.pos_embed[:, 1:, :]
+
+        # masking: length -> length * mask_ratio
+        
+        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        
+        # append cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+    
+
+        # apply Transformer blocks
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+
+        return x, mask, ids_restore
+
+    def forward_pool(self, x):
+        # embed patches
+        x = self.patch_embed(x)
+
+        # add pos embed w/o cls token
+        x = x + self.pos_embed[:, 1:, :]
+        
+        # apply Transformer blocks
+        for blk in self.blocks:
+            x = blk(x)
+        x = x.mean(dim=1, keepdim=True)
+        x = self.norm(x)
+        return x
+    
+    def forward_cls(self, x):
+        # embed patches
+        x = self.patch_embed(x)
+
+        # add pos embed w/o cls token
+        x = x + self.pos_embed[:, 1:, :]
+        
+        # append cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # apply Transformer blocks
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)
+        return x[:,0]
+    
+    def forward_decoder(self, x, ids_restore):
+        # embed tokens
+        x = self.decoder_embed(x)
+
+        # append mask tokens to sequence
+        mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
+
+        # add pos embed
+        x = x + self.decoder_pos_embed
+        
+
+        # apply Transformer blocks
+        for blk in self.decoder_blocks:
+            x = blk(x)
+        x = self.decoder_norm(x)
+
+        # predictor projection
+        x = self.decoder_pred(x)
+
+        # remove cls token
+        x = x[:, 1:, :]
+
+        return x
+        
+    def forward_loss(self, x, pred, mask):
+        """
+        x: [N, in_chans, T]
+        pred: [N, L, p*in_chans]
+        mask: [N, L], 0 is keep, 1 is remove, 
+        """
+        target = self.patchify(x)
+        if self.norm_pix_loss:
+            mean = target.mean(dim=-1, keepdim=True)
+            var = target.var(dim=-1, keepdim=True)
+            target = (target - mean) / (var + 1.e-6)**.5
+
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+
+        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
+
+    def forward(self, x, mask_ratio=0.75):
+        latent, mask, ids_restore = self.forward_encoder(x, mask_ratio)
+        
+        pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*in_chans]
+        loss = self.forward_loss(x, pred, mask)
+        return loss, pred, mask
+    
 class AutoencoderKL(pl.LightningModule):
     def __init__(self,
                  ddconfig,
@@ -468,6 +752,7 @@ class AutoencoderKL(pl.LightningModule):
                  ignore_keys=[],
                  colorize_nlabels=None,
                  monitor=None,
+                 to_mean=False
                  ):
         super().__init__()
         self.encoder = Encoder(**ddconfig)
@@ -488,6 +773,7 @@ class AutoencoderKL(pl.LightningModule):
         self.learning_rate = 4.5e-6
         self.automatic_optimization = False
         self.z_channels = ddconfig["z_channels"]
+        self.to_mean = to_mean
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -500,10 +786,10 @@ class AutoencoderKL(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
 
-    def encode(self, x):
+    def encode(self, x, scale):
         h = self.encoder(x)
         moments = self.quant_conv(h)
-        posterior = DiagonalGaussianDistribution(moments)
+        posterior = DiagonalGaussianDistribution(moments,scale)
         return posterior
 
     def decode(self, z):
@@ -511,8 +797,8 @@ class AutoencoderKL(pl.LightningModule):
         dec = self.decoder(z)
         return dec
 
-    def forward(self, input, sample_posterior=True):
-        posterior = self.encode(input)
+    def forward(self, input, sample_posterior=True,scale=1.0):
+        posterior = self.encode(input,scale)
         if sample_posterior:
             z = posterior.sample()
         else:
@@ -527,33 +813,38 @@ class AutoencoderKL(pl.LightningModule):
         inputs = eeg
         reconstructions, posterior, z  = self(inputs)
 
-        opt1 = self.optimizers()
+        opt1,opt2 = self.optimizers()
         
+        if self.to_mean:
+            target = eeg_mean
+        else:
+            target = inputs
         # train encoder+decoder+logvar
-        # if self.global_step%2==0:
-        aeloss, log_dict_ae = self.loss(eeg_mean, reconstructions, posterior, 0, self.global_step,
-                                        last_layer=self.get_last_layer(), split="train")
-        self.manual_backward(aeloss)
-        opt1.step()
-        opt1.zero_grad()
-        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
+        if self.global_step%2==0:
+            aeloss, log_dict_ae = self.loss(target, reconstructions, posterior, 0, self.global_step,
+                                                last_layer=self.get_last_layer(), split="train")
+            self.manual_backward(aeloss)
+            opt1.step()
+            opt1.zero_grad()
+            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
 
         # train the discriminator
-        # else:
-        #     discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
-        #                                         last_layer=self.get_last_layer(), split="train")
-        #     self.manual_backward(discloss)
-        #     opt2.step()
-        #     opt2.zero_grad()
-        #     self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        #     self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
+        else:
+            discloss, log_dict_disc = self.loss(target, reconstructions, posterior, 1, self.global_step,
+                                                last_layer=self.get_last_layer(), split="train")
+            self.manual_backward(discloss)
+            opt2.step()
+            opt2.zero_grad()
+            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False, sync_dist=True)
 
-    def plot_recon_eeg(self,data,save_path,pred_raw):
+    def plot_recon_eeg(self,raw,raw_mean,raw_pred,save_path):
         fig, axes = plt.subplots(17, 1, figsize=(10, 34),dpi=300)
         for i in range(17):
-            axes[i].plot(data[i], label='Raw Data',color='blue',linewidth=1)  
-            axes[i].plot(pred_raw[i], label='Recon Data',color='orange',linewidth=1)
+            axes[i].plot(raw[i], label='Raw Data',color='blue',linewidth=1)  
+            axes[i].plot(raw_mean[i], label='Raw Mean Data',color='red',linewidth=1)  
+            axes[i].plot(raw_pred[i], label='Recon Data',color='orange',linewidth=1)
         plt.tight_layout()
         plt.savefig(save_path, format='png')
 
@@ -561,21 +852,28 @@ class AutoencoderKL(pl.LightningModule):
         eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
         inputs = eeg
         reconstructions, posterior, z = self(inputs)
-        aeloss, log_dict_ae = self.loss(eeg_mean, reconstructions, posterior, 0, self.global_step,
+
+        if self.to_mean:
+            target = eeg_mean
+        else:
+            target = inputs
+
+        aeloss, log_dict_ae = self.loss(target, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="val")
 
-        # discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
-        #                                     last_layer=self.get_last_layer(), split="val")
+        discloss, log_dict_disc = self.loss(target, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="val")
 
-        log_dict_combined = {**log_dict_ae}#, **log_dict_disc}
+        log_dict_combined = {**log_dict_ae, **log_dict_disc}
 
         self.log_dict(log_dict_combined, sync_dist=True)
 
         if batch_idx == 0:
             _target_raw = eeg[0].cpu().detach().numpy()
+            _target_raw_mean = eeg_mean[0].cpu().detach().numpy()
             image_path = os.path.join(self.logger.log_dir, f'Val_Recon_EEG_{self.current_epoch}.png')
             _pred_raw = reconstructions[0].cpu().detach().numpy()
-            self.plot_recon_eeg(_target_raw,image_path,_pred_raw)
+            self.plot_recon_eeg(_target_raw, _target_raw_mean,_pred_raw,image_path)
 
         return self.log_dict
 
@@ -586,10 +884,9 @@ class AutoencoderKL(pl.LightningModule):
                                   list(self.quant_conv.parameters())+
                                   list(self.post_quant_conv.parameters()),
                                   lr=lr, betas=(0.5, 0.9))
-        # opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
-        #                             lr=lr, betas=(0.5, 0.9))
-        # return [opt_ae, opt_disc], []
-        return [opt_ae], []
+        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+                                    lr=lr, betas=(0.5, 0.9))
+        return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
         return self.decoder.conv_out.weight
@@ -618,4 +915,3 @@ class AutoencoderKL(pl.LightningModule):
     #     x = F.conv1d(x, weight=self.colorize)
     #     x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
     #     return x
-

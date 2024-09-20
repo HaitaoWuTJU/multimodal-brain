@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import matplotlib.pyplot as plt
-
+from torch.optim.lr_scheduler import StepLR,CosineAnnealingLR
 from lavis.models.clip_models.loss import ClipLoss
 from torch.utils.data import DataLoader, Dataset
 import random
@@ -74,8 +74,6 @@ def train_subject(config,data,model,args):
             
             
             eeg_features = model['eeg'](eeg)
-
-
             logit_scale = model['eeg'].logit_scale#.exp()
             
             eeg_img_clip_loss = clip_loss(eeg_features, img_features,logit_scale)
@@ -86,7 +84,8 @@ def train_subject(config,data,model,args):
             eeg_text_mse_loss = mse_loss(eeg_features, text_features)
             text_img_mse_loss = mse_loss(text_features, img_features)
             
-            loss = 100*eeg_img_mse_loss + eeg_img_clip_loss
+            # loss = 100*eeg_img_mse_loss + eeg_img_clip_loss
+            loss = eeg_img_clip_loss
             args['optimizer'].zero_grad()
             loss.backward()
             args['optimizer'].step()
@@ -101,11 +100,11 @@ def train_subject(config,data,model,args):
             tot_cnt+=prediction.shape[0]
             tot_correct_cnt+=correct_count
             
-            if (i+1) % 10 == 0:
-                logging.info(f"Epoch {epoch + 1}, Iteration {i}, CLip:{eeg_img_clip_loss.item():.4f} MSE:{eeg_img_mse_loss.item():.4f}")
+            if (i+1) % 3 == 0:
+                logging.info(f"Epoch {epoch}, Iteration {i}, CLip:{eeg_img_clip_loss.item():.4f} MSE:{eeg_img_mse_loss.item():.4f}")
                 
         train_acc = tot_correct_cnt/tot_cnt
-        logging.info(f"Epoch {epoch + 1}, Train ACC: {train_acc:.3f}")
+        logging.info(f"Epoch {epoch}, Train ACC: {train_acc:.3f}")
         torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"ckpt_{epoch}_{'_'.join(args['subjects'])}.pth"))
         
         top_1_accuracy,top_k_accuracy,accuracy_n_way = eval_subject(config,data,model,args)
@@ -118,7 +117,9 @@ def train_subject(config,data,model,args):
             args['best_train_acc'] = train_acc
             torch.save({k:v.state_dict() for k,v in model.items()}, os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(args['subjects'])}.pth"))
         logging.info(f"Test Top1-ACC: {top_1_accuracy:.3f},Top5-ACC: {top_k_accuracy:.3f} {tag}")
+        args['scheduler'].step()
 
+        
 @torch.no_grad()
 def eval_subject(config,data,model,eval_args):
     
@@ -228,12 +229,12 @@ def main():
         "device":device,
         "name": 'mse100_clip_loss',#os.path.basename(__file__).rsplit('.',1)[0],
         "lr": 1e-4,
-        "epochs": 200,
-        "batch_size": 1024,
+        "epochs": 100,
+        "batch_size": 4096,
         "model_type":model_type,
         "latend_dim":latend_dim,
         "logger": True,
-        "subjects":['sub-01','sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
+        "subjects":['sub-08'],#,'sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
         "eeg_model":{'name':'ProjectLayer','args':{'embedding_dim':len(selected_ch)*250, 'proj_dim':latend_dim}},
         "aux":{'name':'MLP','args':{'input_dim':latend_dim_dict[model_type],'output_dim':10,'hiden_dims':[]}},
         # "eeg_model":{'name':'MLP','args':{'input_dim':len(selected_ch)*250,'output_dim':latend_dim,'hiden_dims':[]}},#{'name':'LSTMModel', 'args':{}},
@@ -255,11 +256,11 @@ def main():
 
     
     test_dataset = EEGDataset(data_dir=config['data_dir'],subjects=config['subjects'],model_type=config['model_type'],mode='test',selected_ch=selected_ch,transform=transform,avg=True)
-    train_dataset = EEGDataset(data_dir=config['data_dir'],subjects=config['subjects'],model_type=config['model_type'],mode='train',selected_ch=selected_ch,transform=transform,avg=False)
+    train_dataset = EEGDataset(data_dir=config['data_dir'],subjects=config['subjects'],model_type=config['model_type'],mode='train',selected_ch=selected_ch,transform=transform,avg=True)
     
     logging.info(f"train num: {len(train_dataset)}, test num: {len(test_dataset)}")
-    test_loader = DataLoader(test_dataset, batch_size=200, shuffle=False, drop_last=False,num_workers=4)
-    train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=200, shuffle=False, drop_last=False,num_workers=16)
+    train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, drop_last=False, num_workers=16, pin_memory=True)
     
     data={
         'train':train_loader,
@@ -274,23 +275,24 @@ def main():
     logging.info(f"Number of parameters: {sum([p.numel() for p in itertools.chain(model['eeg'].parameters())])}")
     
     train_eval_args = {
-        'optimizer':optim.Adam([{'params': v.parameters(), 'lr': config['lr']} for k,v in model.items()]),
-        # 'criterion':,#ClipLoss(),
+        'optimizer':optim.AdamW([{'params': v.parameters(), 'lr': config['lr']} for k,v in model.items()]),
         'epochs':config['epochs'],
         'subjects':config['subjects'],
         'best_acc':-1,
         'best_epoch':-1,
         'best_train_acc':-1,
+        
     }
 
-    
+    train_eval_args['scheduler'] = CosineAnnealingLR(train_eval_args['optimizer'], T_max=config['epochs'], eta_min=1e-4)
+
     logging.info(f"Start training on {config['subjects']}")
-    # train_subject(config,data,model,train_eval_args)
+    train_subject(config,data,model,train_eval_args)
     
     
     logging.info(f"Start eval on {config['subjects']}")
-    ckpt_path = '/root/workspace/wht/multimodal_brain/src/exp/clip_transformer_desubject_32/ckpt_7_sub-01_sub-02_sub-03_sub-04_sub-05_sub-06_sub-07_sub-08_sub-09_sub-10.pth'
-    # ckpt_path = os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(config['subjects'])}.pth")
+    # ckpt_path = '/root/workspace/wht/multimodal_brain/src/exp/clip_transformer_desubject_32/ckpt_7_sub-01_sub-02_sub-03_sub-04_sub-05_sub-06_sub-07_sub-08_sub-09_sub-10.pth'
+    ckpt_path = os.path.join(config['exp_dir'],f"best_ckpt_{'_'.join(config['subjects'])}.pth")
     model['eeg'].load_state_dict(torch.load(ckpt_path,map_location=config['device'])['eeg'])
     
     accuracy_n_way={'10':[],'4':[],'2':[]}
@@ -305,7 +307,6 @@ def main():
     
     for k,v in accuracy_n_way.items():
         logging.info(f"{k}-way Acc: {np.mean(v):.3f}")
-        
         
 if __name__=="__main__":
     

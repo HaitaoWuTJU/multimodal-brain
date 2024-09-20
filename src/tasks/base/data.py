@@ -1,11 +1,10 @@
-import torch,os,mne
+import torch,os
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
 from PIL import Image
 import logging
 import open_clip
-import redis
 import pickle
 from torch.utils.data import DataLoader, random_split
 
@@ -13,15 +12,15 @@ def load_data(config):
     data_config = config['data']
 
     test_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='test',selected_ch=data_config['selected_ch'],transform=None,avg=data_config['test_avg'])
-    train_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='train',selected_ch=data_config['selected_ch'],transform=None,avg=False)
+    train_dataset = EEGDataset(data_dir=data_config['data_dir'],subjects=data_config['subjects'],model_type=data_config['clip_feature'],mode='train',selected_ch=data_config['selected_ch'],transform=None,avg=data_config['train_avg'])
 
     # train_size = len(train_dataset) * data_config['train_val_rate']
     # val_size = len(train_dataset) - train_size
     # train_subset, val_subset = random_split(train_dataset, [train_size, val_size])
 
-    test_loader = DataLoader(test_dataset, batch_size=data_config['test_batch_size'], shuffle=False, drop_last=False,num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=data_config['test_batch_size'], shuffle=False, drop_last=False,num_workers=32)
     # val_loader = DataLoader(val_subset, batch_size=200, shuffle=False, drop_last=False,num_workers=4)
-    train_loader = DataLoader(train_dataset, batch_size=data_config['train_batch_size'], shuffle=True, drop_last=False, num_workers=12, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=data_config['train_batch_size'], shuffle=True, drop_last=False, num_workers=32, pin_memory=True)
 
     return train_loader, test_loader
 
@@ -42,10 +41,12 @@ class EEGDataset():
                         'CPz', 'CP2', 'CP4', 'CP6', 'TP8', 'TP10', 'P7', 'P5', 'P3', 'P1',
                         'Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8',
                         'O1', 'Oz', 'O2']
-        
+        if self.selected_ch == "None":
+            self.selected_ch = self.channels
         self.transform = transform
         self.avg = avg
         self.n_cls = 1654 if self.mode=='train' else 200
+        self.per_trials = 4 if self.mode=='train' else 80
         self.data_paths = [os.path.join(self.data_dir,subject,f'{mode}.pt') for subject in self.subjects]
         
         self.loaded_data= [self.load_data(data_path) for data_path in self.data_paths]
@@ -55,7 +56,7 @@ class EEGDataset():
         
         
         
-        features_filename = os.path.join(self.data_dir,f"{model_type.replace('/','-')}_features_{mode}.pt")
+        features_filename = os.path.join(self.data_dir,'../Image_feature',f"{model_type.replace('/','-')}_features_{mode}.pt")
         if os.path.exists(features_filename) :
             saved_features = torch.load(features_filename)
             self.img_features = saved_features['img_features']
@@ -94,7 +95,6 @@ class EEGDataset():
             loaded_data['eeg'] = loaded_data['eeg'][:,:,selected_idx]
         if self.avg:
             avg_data={}
-            label = loaded_data['label']
             avg_data['eeg'] = loaded_data['eeg'].mean(axis=1)
             avg_data['label'] = loaded_data['label'][:,0]
             avg_data['img'] = loaded_data['img'][:,0]
@@ -152,7 +152,10 @@ class EEGDataset():
         trial_index = index % self.trial_subject
 
         eeg = self.loaded_data[subject]['eeg'][trial_index].float()
-        eeg_mean = self.loaded_data[subject]['eeg_avg'][trial_index//4].float()
+        if self.avg:
+            eeg_mean = eeg
+        else:
+            eeg_mean = self.loaded_data[subject]['eeg_avg'][trial_index//self.per_trials].float()
 
         label = self.loaded_data[subject]['label'][trial_index]
         img = self.loaded_data[subject]['img'][trial_index]
@@ -164,7 +167,7 @@ class EEGDataset():
         if self.transform:
             eeg = self.transform(eeg)
         
-        return eeg, label, img, img_features,text, text_features,session,subject,eeg_mean
+        return eeg[:,:600], label, img, img_features,text, text_features,session,subject,eeg_mean[:600]
 
     def __len__(self):
         return self.trial_all_subjects

@@ -20,7 +20,7 @@ def instantiate_from_config(config):
         elif config == "__is_unconditional__":
             return None
         raise KeyError("Expected key `target` to instantiate.")
-    return get_obj_from_str(config["target"])(**config.get("params", dict()))
+    return get_obj_from_str(config["target"])(**config.get("params", dict()) if config.get("params", dict()) else {})
 
 def set_seed(seed):
     random.seed(seed)
@@ -107,6 +107,7 @@ def gather_features(
 
     return all_image_features, all_text_features
 
+
 class ClipLoss(nn.Module):
     def __init__(
         self,
@@ -172,30 +173,31 @@ class ClipLoss(nn.Module):
         ) / 2
         return total_loss
 
+#NO
+# class MultilabelClipLoss(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.criterion = nn.BCEWithLogitsLoss()
 
-class MultilabelClipLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.criterion = nn.BCEWithLogitsLoss()
+#     def forward(self, image_features, text_features, logit_scale):
+#         device = image_features.device
+#         logits_per_image = torch.matmul(image_features, text_features.T) * logit_scale
+#         logits_per_text = logits_per_image.T
 
-    def forward(self, image_features, text_features, logit_scale):
-        device = image_features.device
-        logits_per_image = torch.matmul(image_features, text_features.T) * logit_scale
-        logits_per_text = logits_per_image.T
+#         n = logits_per_image.shape[0]
 
-        n = logits_per_image.shape[0]
-
-        normalized_matrix = text_features / text_features.norm(dim=1, keepdim=True)
-        similarity_matrix = torch.matmul(normalized_matrix, normalized_matrix.T)
+#         normalized_matrix = text_features / text_features.norm(dim=1, keepdim=True)
+#         similarity_matrix = torch.matmul(normalized_matrix, normalized_matrix.T)
         
-        similarity_matrix[similarity_matrix < (1-1e-6)] = 0
-        labels = similarity_matrix
+#         similarity_matrix[similarity_matrix < (1-1e-6)] = 0
+
+#         labels = similarity_matrix
         
-        total_loss = (
-            self.criterion(logits_per_image, labels)
-            + self.criterion(logits_per_text, labels.T)
-        ) / 2
-        return total_loss
+#         total_loss = (
+#             self.criterion(logits_per_image, labels)
+#             + self.criterion(logits_per_text, labels.T)
+#         ) / 2
+#         return total_loss
   
 class SoftClipLoss(nn.Module):
     def __init__(self):
