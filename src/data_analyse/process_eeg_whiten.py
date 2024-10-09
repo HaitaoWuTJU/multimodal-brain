@@ -22,7 +22,7 @@ sub = args.subject
 n_ses = 4
 
 seed = 20200220
-re_sfreq= 1000
+re_sfreq= 250
 tmin = -0.2
 tmax = 1.0
 whiten = True
@@ -264,7 +264,12 @@ all_folders.sort()
 images = []  
 labels = []
 texts = []
-for i,folder in enumerate(all_folders):
+for i,folder in enumerate(# `all_folders` is a list that is being used to store the names of all the
+# folders present in the specified directory `img_directory`. In this code
+# snippet, `all_folders` is being populated with the names of the folders
+# found within the `img_directory` path. These folders are then sorted in
+# alphabetical order.
+all_folders):
     folder_path = os.path.join(img_directory, folder)
     all_images = [img for img in os.listdir(folder_path) if img.lower().endswith(('.png', '.jpg', '.jpeg'))]
     all_images.sort()

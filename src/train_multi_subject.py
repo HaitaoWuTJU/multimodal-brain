@@ -224,7 +224,7 @@ def main():
     latend_dim_dict = {'ViT-B-16':512,'ViT-B-32':512,'ViT-L-14': 768,'RN50':1024,'RN101':512,'RN50x4':640,'ViT-H-14':1024,'ViT-g-14':1024,'ViT-bigG-14':1280}
     latend_dim = latend_dim_dict[model_type]
     config = {
-        "data_dir": "/dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz_whiten",#"/dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz/",
+        "data_dir": "/home/wht/multimodal_brain/datasets/things-eeg-small/Preprocessed_data_250Hz_whiten",#"/dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz/",
         "exp_root":'./exp',
         "device":device,
         "name": 'mse100_clip_loss',#os.path.basename(__file__).rsplit('.',1)[0],
@@ -234,7 +234,7 @@ def main():
         "model_type":model_type,
         "latend_dim":latend_dim,
         "logger": True,
-        "subjects":['sub-08'],#,'sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
+        "subjects":['sub-01'],#,'sub-02','sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10'],
         "eeg_model":{'name':'ProjectLayer','args':{'embedding_dim':len(selected_ch)*250, 'proj_dim':latend_dim}},
         "aux":{'name':'MLP','args':{'input_dim':latend_dim_dict[model_type],'output_dim':10,'hiden_dims':[]}},
         # "eeg_model":{'name':'MLP','args':{'input_dim':len(selected_ch)*250,'output_dim':latend_dim,'hiden_dims':[]}},#{'name':'LSTMModel', 'args':{}},

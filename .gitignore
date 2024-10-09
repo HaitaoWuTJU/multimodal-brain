@@ -47,3 +47,8 @@ EEG_Image_decode/**
 src/tasks/plot/U/**
 
 **/lightning_logs/**
+
+src/tasks/analyse/figures/Occlusion_Sensitivity_train/**
+src/tasks/analyse/figures/Occlusion_Sensitivity/**
+
+src/tasks/analyse/figures/U/**

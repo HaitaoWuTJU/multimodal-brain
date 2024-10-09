@@ -69,16 +69,16 @@ class ProjectLayer(nn.Module):
 class PatchEmbed1D(nn.Module):
     """ 1 Dimensional version of data to Patch Embedding
     """
-    def __init__(self, size=256, patch_size=16, in_chans=63, embed_dim=768):
+    def __init__(self, size=256, patch_size=16, c_num=63, embed_dim=768):
         super().__init__()
         num_patches = size // patch_size
         self.patch_shape = patch_size
         self.size = size
         self.patch_size = patch_size
         self.num_patches = num_patches
-        self.in_chans = in_chans
+        self.c_num = c_num
 
-        self.proj = nn.Conv1d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = nn.Conv1d(c_num, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x, **kwargs):
         B,C, T = x.shape # batch, channel, time
@@ -122,11 +122,11 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     return emb
 
 class MaskAutoencoder(nn.Module):
-    def __init__(self,size = 250 ,patch_size=25 ,in_chans=63,embed_dim=512,depth=24,num_heads=16,mlp_ratio=1.,decoder_embed_dim=512,decoder_depth=8,decoder_num_heads=16,norm_layer=nn.LayerNorm,norm_pix_loss=False):
+    def __init__(self,size = 800 ,patch_size=25 ,c_num=63,embed_dim=512,depth=24,num_heads=16,mlp_ratio=1.,decoder_embed_dim=512,decoder_depth=8,decoder_num_heads=16,norm_layer=nn.LayerNorm,norm_pix_loss=False):
         super(Autoencoder, self).__init__()
-        self.in_chans = in_chans
+        self.c_num = c_num
         #patch embed
-        self.patch_embed = PatchEmbed1D(size = size,patch_size = patch_size,in_chans=in_chans,embed_dim=embed_dim)
+        self.patch_embed = PatchEmbed1D(size = size,patch_size = patch_size,c_num=c_num,embed_dim=embed_dim)
 
         #pos embed
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -148,7 +148,7 @@ class MaskAutoencoder(nn.Module):
                     for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size * in_chans, bias=True) # decoder to patch
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size * c_num, bias=True) # decoder to patch
         
         self.norm_pix_loss = norm_pix_loss
         
@@ -188,7 +188,7 @@ class MaskAutoencoder(nn.Module):
          
     def patchify(self, x):
         """
-        x: (N, in_chans, T)
+        x: (N, c_num, T)
         x: (N, L, patch_size)
         """
         p = self.patch_embed.patch_size
@@ -196,7 +196,7 @@ class MaskAutoencoder(nn.Module):
 
         h = x.shape[2] // p
         
-        x = x.reshape(x.shape[0],h,p*self.in_chans)
+        x = x.reshape(x.shape[0],h,p*self.c_num)
         return x
     
     def unpatchify(self, x):
@@ -205,7 +205,7 @@ class MaskAutoencoder(nn.Module):
         imgs: (N, 17, T)
         """
 
-        x = x.reshape(x.shape[0], self.in_chans, -1)
+        x = x.reshape(x.shape[0], self.c_num, -1)
         return x
        
     def random_masking(self, x, mask_ratio):
@@ -348,11 +348,11 @@ class MaskAutoencoder(nn.Module):
         return loss, pred, mask
 
 class Autoencoder(nn.Module):
-    def __init__(self,size = 250 ,patch_size=25 ,in_chans=63,embed_dim=512,depth=24,num_heads=16,mlp_ratio=1.,decoder_embed_dim=512,decoder_depth=8,decoder_num_heads=16,norm_layer=nn.LayerNorm,norm_pix_loss=False):
+    def __init__(self,timesteps = 250 ,patch_size=25 ,c_num=63,embed_dim=512,depth=24,num_heads=16,mlp_ratio=1.,decoder_embed_dim=512,decoder_depth=8,decoder_num_heads=16,norm_layer=nn.LayerNorm,norm_pix_loss=False):
         super(Autoencoder, self).__init__()
-        self.in_chans = in_chans
+        self.c_num = c_num
         #patch embed
-        self.patch_embed = PatchEmbed1D(size = size,patch_size = patch_size,in_chans=in_chans,embed_dim=embed_dim)
+        self.patch_embed = PatchEmbed1D(size = timesteps,patch_size = patch_size,c_num=c_num,embed_dim=embed_dim)
 
         #pos embed
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -374,7 +374,7 @@ class Autoencoder(nn.Module):
                     for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size * in_chans, bias=True) # decoder to patch
+        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size * c_num, bias=True) # decoder to patch
         
         self.norm_pix_loss = norm_pix_loss
         
@@ -415,7 +415,7 @@ class Autoencoder(nn.Module):
          
     def patchify(self, x):
         """
-        x: (N, in_chans, T)
+        x: (N, c_num, T)
         x: (N, L, patch_size)
         """
         p = self.patch_embed.patch_size
@@ -423,7 +423,7 @@ class Autoencoder(nn.Module):
 
         h = x.shape[2] // p
         
-        x = x.reshape(x.shape[0],h,p*self.in_chans)
+        x = x.reshape(x.shape[0],h,p*self.c_num)
         return x
     
     def unpatchify(self, x):
@@ -432,7 +432,7 @@ class Autoencoder(nn.Module):
         imgs: (N, 17, T)
         """
 
-        x = x.reshape(x.shape[0], self.in_chans, -1)
+        x = x.reshape(x.shape[0], self.c_num, -1)
         return x
        
     
@@ -552,6 +552,31 @@ class ProjectLayer(nn.Module):
         x = self.model(x)
         return x
 
+class EEGProjectLayer(nn.Module):
+    def __init__(self,  z_dim, dummy_dim,c_num, timesteps, drop_proj=0.3):
+        super(EEGProjectLayer, self).__init__()
+        self.z_dim = z_dim
+        self.dummy_dim = dummy_dim
+        self.c_num = c_num
+        self.timesteps = timesteps
+
+        self.input_dim = self.c_num * self.timesteps
+        proj_dim = 1*z_dim+dummy_dim
+
+        self.model = nn.Sequential(nn.Linear(self.input_dim, proj_dim),
+            ResidualAdd(nn.Sequential(
+                nn.GELU(),
+                nn.Linear(proj_dim, proj_dim),
+                nn.Dropout(drop_proj),
+            )),
+            nn.LayerNorm(proj_dim))
+        
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        
+    def forward(self, x):
+        x = x.view(x.shape[0], self.input_dim)
+        x = self.model(x)
+        return x
 class Debias(nn.Module):
     def __init__(self, embedding_dim,proj_dim):
         super(Debias, self).__init__()

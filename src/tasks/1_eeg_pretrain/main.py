@@ -55,8 +55,8 @@ def main():
     
     checkpoint_callback = ModelCheckpoint(
             monitor='val_aeloss',
-            mode='max',
-            save_top_k=-1)
+            mode='min',
+            save_top_k=3)
 
     trainer = Trainer(strategy=DDPStrategy(find_unused_parameters=True),callbacks=[checkpoint_callback],max_epochs=config['train']['epoch'], devices=[7],accelerator='cuda',logger=logger)
    

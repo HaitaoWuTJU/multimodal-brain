@@ -66,12 +66,13 @@ def main():
         checkpoint_callback = ModelCheckpoint(
             monitor='val_top1_acc',
             mode='max',
-            save_top_k=-1,
+            save_top_k=3,
         )
         trainer = Trainer(strategy=DDPStrategy(find_unused_parameters=False),callbacks=[checkpoint_callback],max_epochs=config['train']['epoch'], devices=[7],accelerator='gpu', logger=logger)
     
         print(trainer.logger.save_dir, trainer.logger.version)
-        
+        ckpt_path = "/home/wht/multimodal_brain/src/tasks/exp/VAE_finetune/version_4/checkpoints/epoch=99-step=1700.ckpt"
+     
         trainer.fit(pl_model, train_dataloaders=train_loader, val_dataloaders=test_loader)
 
         trainer.test(ckpt_path='best', dataloaders=test_loader)

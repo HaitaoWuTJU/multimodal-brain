@@ -2,34 +2,34 @@ version: 1
 
 models:
   eeg:
-    target: base.vae.VAE
+    target: base.models.EEGProjectLayer
     params:
-        to_mean: False
-        z_dim: 512
+        z_dim: 1024
+        dummy_dim: 0
         c_num: 17
-        timesteps: 600
+        timesteps: 800
 
   debias:
     target: base.models.Direct
     params:
-        embedding_dim: 512
-        proj_dim: 512
-
+        a: 0
 
 data:
   data_dir: /dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_1000Hz_whiten
   subjects: ['sub-08'] #'sub-01','sub-02' ,'sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10']
   selected_ch: ['P7', 'P5', 'P3', 'P1','Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8','O1', 'Oz', 'O2']
-  clip_feature: ViT-B-32
+  model_type: RN50
   train_val_rate: 0.8
   train_batch_size: 1024
   test_batch_size: 200
+  GaussianBlur: 'false' #'dynamic'
+  blur_kernel_size: 41
   train_avg: True
   test_avg: True
 
 train:
   epoch: 100
-  optimizer: Adam
+  optimizer: AdamW
   lr: 1e-4
 
 save_dir: '/home/wht/multimodal_brain/src/tasks/exp'

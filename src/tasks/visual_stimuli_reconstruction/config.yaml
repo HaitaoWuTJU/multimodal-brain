@@ -1,0 +1,28 @@
+version: 1
+
+models:
+  eeg:
+    target: base.models.EEGProjectLayer
+    params:
+        z_dim: 15376
+        dummy_dim: 0
+        c_num: 17
+        timesteps: 800
+
+data:
+  target: base.data.EEGDatasetLDM
+  params:
+      data_dir: /dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_1000Hz_whiten
+      subjects: ['sub-08'] #'sub-01','sub-02' ,'sub-03', 'sub-04', 'sub-05', 'sub-06', 'sub-07', 'sub-08', 'sub-09', 'sub-10']
+      selected_ch: ['P7', 'P5', 'P3', 'P1','Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8','O1', 'Oz', 'O2']
+      train_batch_size: 1024
+      test_batch_size: 200
+      train_avg: True
+      test_avg: True
+
+train:
+  epoch: 100
+  optimizer: AdamW
+  lr: 1e-4
+
+save_dir: '/home/wht/multimodal_brain/src/tasks/exp'

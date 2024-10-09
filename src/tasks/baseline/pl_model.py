@@ -10,6 +10,7 @@ import numpy as np
 import torchvision.transforms as transforms
 from omegaconf import OmegaConf
 from lavis.models.clip_models.loss import ClipLoss
+import open_clip
 
 from base.utils import instantiate_from_config, SoftClipLoss
 
@@ -37,29 +38,49 @@ class PLModel(pl.LightningModule):
         self.all_predicted_classes = []
         self.all_true_labels = []
 
+        model_type = 'ViT-B-32'
+        pretrain_map={
+                        'RN50':'openai',
+                        'RN101':'openai',
+                        'RN50x4':'openai',
+                        'ViT-B-16':'laion2b_s34b_b88k',
+                        'ViT-B-32':'laion2b_s34b_b79k',
+                        'ViT-L-14':'laion2b_s32b_b82k',
+                        'ViT-H-14':'laion2b_s32b_b79k',
+                        'ViT-g-14':'laion2b_s34b_b88k', 
+                        'ViT-bigG-14':'laion2b_s39b_b160k'}
+        self.vlmodel = {}
+        self.vlmodel['model'] = open_clip.create_model_and_transforms(model_type, device="cuda:7",pretrained=pretrain_map[model_type])[0]
+        self.vlmodel['model'].eval()
+        self.vlmodel['model'].visual.output_tokens = True
+        self.vlmodel['model'].visual.attn_pool = self.vlmodel['model'].visual.proj = None
+        
     def forward(self, batch):
         eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
         
-        # eeg_features = self.eeg.forward_cls(eeg)
+        pooler_output, last_hidden_state = self.vlmodel['model'].visual(img)
+        last_hidden_state = torch.cat([pooler_output.unsqueeze(1), last_hidden_state], dim=1).view(eeg.shape[0],-1)
+
         semantic_features = self.projcect(eeg)
         logit_scale = self.projcect.logit_scale #.exp()
-        loss = self.criterion(semantic_features, img_features, logit_scale)
+        loss = self.criterion(semantic_features, last_hidden_state, logit_scale)
 
-        return loss, semantic_features
+        return loss, semantic_features, last_hidden_state
     
     def training_step(self, batch, batch_idx):
-        loss, semantic_features = self(batch)
+        loss, semantic_features, last_hidden_state = self(batch)
         self.log('train_loss', loss, on_step=True, on_epoch=True,prog_bar=True, logger=True, sync_dist=True, batch_size=batch[0].shape[0])
         return loss
 
     def validation_step(self, batch, batch_idx):
         eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
-        loss, semantic_features = self(batch)
+        loss, semantic_features, last_hidden_state = self(batch)
         self.log('val_loss', loss, on_step=False, on_epoch=True,prog_bar=True, logger=True, sync_dist=True, batch_size=batch[0].shape[0])
     
         semantic_features = semantic_features/semantic_features.norm(dim=-1, keepdim=True)
+        last_hidden_state = last_hidden_state/last_hidden_state.norm(dim=-1, keepdim=True)
 
-        similarity = (semantic_features @ img_features.T)
+        similarity = (semantic_features @ last_hidden_state.T)
         top_kvalues, top_k_indices = similarity.topk(5, dim=-1)
         self.all_predicted_classes.append(top_k_indices.cpu().numpy())
         self.all_true_labels.extend(label.cpu().numpy())
@@ -84,14 +105,15 @@ class PLModel(pl.LightningModule):
         
     def test_step(self,batch, batch_idx):
         eeg, label, img, img_features, text, text_features, session, subject, eeg_mean = batch
-        loss, semantic_features = self(batch)
+        loss, semantic_features, last_hidden_state = self(batch)
         self.log('test_loss', loss, on_step=False, on_epoch=True,prog_bar=True, logger=True, sync_dist=True, batch_size=batch[0].shape[0])
 
 
         self.all_image_features = self.all_image_features.to(self.device)
         semantic_features = semantic_features/semantic_features.norm(dim=-1, keepdim=True)
+        last_hidden_state = last_hidden_state/last_hidden_state.norm(dim=-1, keepdim=True)
 
-        similarity = (semantic_features @ self.all_image_features.T)
+        similarity = (semantic_features @ last_hidden_state.T)
         top_kvalues, top_k_indices = similarity.topk(5, dim=-1)
         self.all_predicted_classes.append(top_k_indices.cpu().numpy())
         self.all_true_labels.extend(label.cpu().numpy())

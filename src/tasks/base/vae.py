@@ -13,7 +13,7 @@ from .autoencoder import DiagonalGaussianDistribution
 from .utils import instantiate_from_config
 
 class VAE(pl.LightningModule):
-    def __init__(self,to_mean=False, z_dim = 512,c_num = 17,lr=4.5e-6, kl_weight = 1e-3, timesteps=250):
+    def __init__(self,to_mean=False, z_dim = 512,c_num = 17,lr=4.5e-6, kl_weight = 1e-2, timesteps=250,dummy_dim=3):
         super().__init__()
         self.encoder = ProjectLayer(c_num*timesteps,2*z_dim)
         self.decoder = ProjectLayer(z_dim,c_num*timesteps)
@@ -24,7 +24,7 @@ class VAE(pl.LightningModule):
         self.c_num = c_num
         self.lr = lr
         self.kl_weight = kl_weight
-
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     def encode(self, x, scale):
         z = self.encoder(x)
         posterior = DiagonalGaussianDistribution(z, scale)
@@ -40,7 +40,7 @@ class VAE(pl.LightningModule):
             z = posterior.sample()
         else:
             z = posterior.mode()
-        recon = self.decode(z)
+        recon = self.decode(z[:,:self.z_dim])
         recon = recon.view(input.shape)
         return posterior, z, recon
 

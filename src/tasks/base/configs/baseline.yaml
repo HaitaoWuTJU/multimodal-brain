@@ -4,17 +4,19 @@ models:
   projcect:
     target: base.models.ProjectLayer
     params:
-        embedding_dim: 4250
-        proj_dim: 512
+        embedding_dim: 13600
+        proj_dim: 38400
+
   
 data:
-  data_dir: /dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_250Hz_whiten
+  data_dir: /dev/shm/wht/datasets/things-eeg-small/Preprocessed_data_1000Hz_whiten
   subjects: ['sub-08']
   selected_ch: ['P7', 'P5', 'P3', 'P1','Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8','O1', 'Oz', 'O2']
   clip_feature: ViT-B-32
   train_val_rate: 0.8
   train_batch_size: 1024
   test_batch_size: 200
+  GaussianBlur: False
   train_avg: True
   test_avg: True
 
